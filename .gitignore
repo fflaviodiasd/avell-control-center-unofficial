@@ -1,8 +1,10 @@
 # Ambientes Virtuais
-venv/
+venv
 env/
 .env/
 .venv/
+venv/*
+venv/lib64/pyvenv.cfg
 
 # Cache e Arquivos Compilados do Python
 __pycache__/
