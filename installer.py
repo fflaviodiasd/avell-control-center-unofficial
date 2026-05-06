@@ -86,6 +86,33 @@ class AuthPage(QWizardPage):
             return False
         return True
 
+class KeyboardIdPage(QWizardPage):
+    def __init__(self):
+        super().__init__()
+        self.setTitle("Configuração de Hardware (Teclado)")
+        layout = QVBoxLayout()
+        
+        instructions = QLabel(
+            "Para instalarmos o controle do teclado corretamente, precisamos saber o identificador exato do seu modelo.\n\n"
+            "1. Abra o seu terminal.\n"
+            "2. Digite o seguinte comando e aperte Enter:\n"
+            "   <b>lsusb | grep 048d</b>\n\n"
+            "3. Você verá uma linha parecida com esta:\n"
+            "   Bus 001 Device 003: ID 048d:<b>600b</b> Integrated Technology Express, Inc. ITE Device(8291)\n\n"
+            "4. Copie <b>apenas os 4 caracteres em negrito</b> (após o '048d:') e cole na caixa abaixo:"
+        )
+        instructions.setWordWrap(True)
+        instructions.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(instructions)
+        
+        self.id_input = QLineEdit()
+        self.id_input.setPlaceholderText("Exemplo: 600b")
+        # Registra o campo como obrigatório (asterisco no final do nome)
+        self.registerField("kbd_id*", self.id_input)
+        layout.addWidget(self.id_input)
+        
+        self.setLayout(layout)
+
 class DependencyPage(QWizardPage):
     def __init__(self):
         super().__init__()
@@ -105,10 +132,11 @@ class DependencyPage(QWizardPage):
 
     def initializePage(self):
         pwd = self.field("sudo_password")
+        kbd_id = self.field("kbd_id")
         script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'install_deps.sh')
         real_user = os.environ.get('USER', 'root')
         
-        cmd = ['sudo', '-S', 'bash', script_path, real_user]
+        cmd = ['sudo', '-S', 'bash', script_path, real_user, kbd_id]
         
         self.thread = WorkerThread(cmd, pwd)
         self.thread.output_signal.connect(self.append_log)
@@ -154,13 +182,20 @@ class SystemInstallPage(QWizardPage):
         real_user = os.environ.get('USER', 'root')
         source_dir = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
         
+        # Fallback inteligente para ambiente de desenvolvimento (quando rodado via python)
+        binary_path = os.path.join(source_dir, 'avell-led-control')
+        if not getattr(sys, 'frozen', False) and not os.path.exists(binary_path):
+            alt_path = os.path.join(source_dir, 'dist_v1', 'avell-led-control')
+            if os.path.exists(alt_path):
+                binary_path = alt_path
+        
         # Script on-the-fly para instalar no /opt e criar systemd
         install_script = f"""#!/bin/bash
 set -e
 echo "Criando diretório /opt/avell-control-center..."
 mkdir -p /opt/avell-control-center
 echo "Copiando binário da aplicação..."
-cp "{source_dir}/avell-led-control" /opt/avell-control-center/
+cp "{binary_path}" /opt/avell-control-center/avell-led-control
 cp "{source_dir}/icon.png" /opt/avell-control-center/ 2>/dev/null || true
 chmod 755 /opt/avell-control-center/avell-led-control
 chmod 644 /opt/avell-control-center/icon.png 2>/dev/null || true
@@ -252,6 +287,7 @@ class InstallWizard(QWizard):
         
         self.addPage(IntroPage())
         self.addPage(AuthPage())
+        self.addPage(KeyboardIdPage())
         self.addPage(DependencyPage())
         self.addPage(SystemInstallPage())
         self.addPage(ConclusionPage())

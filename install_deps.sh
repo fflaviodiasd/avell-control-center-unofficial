@@ -5,6 +5,7 @@
 # Argumento 1: Nome do usuário real (para configurar o sudoers).
 
 REAL_USER=$1
+MANUAL_ID=$2
 if [ -z "$REAL_USER" ]; then
     echo "Erro: Forneça o nome do usuário."
     exit 1
@@ -75,19 +76,65 @@ echo -e "> Localizando o chip ITE Device(8291) - Controlador de LED..."
 # e extrai o ID de 4 dígitos (ex: 600b)
 HW_ID=$(lsusb | grep "048d" | grep "(8291)" | grep -oP '048d:\K[0-9a-f]{4}')
 
-if [ -z "$HW_ID" ]; then
-    echo -e "[ERRO] Dispositivo ITE Device(8291) não encontrado via USB."
+if [ -z "$HW_ID" ] && [ -z "$MANUAL_ID" ]; then
+    echo -e "[ERRO] Dispositivo ITE Device(8291) não encontrado via USB e nenhum ID manual foi fornecido."
     echo -e "Aviso: A máquina pode utilizar interface ACPI/WMI, e o aucc será ignorado."
 else
-    echo -e "[OK] Teclado (8291) identificado: 0x$HW_ID"
+    FINAL_ID=${MANUAL_ID:-$HW_ID}
+    echo -e "[OK] Teclado (8291) configurado para usar o ID: 0x$FINAL_ID"
     # 6. Aplicação do Patch de ID no Código Python
     PYTHON_PATH=$(pip3 show avell-unofficial-control-center | grep Location | awk '{print $2}')/aucc/main.py
 
     if [ -f "$PYTHON_PATH" ]; then
         echo -e "> Aplicando patch no arquivo $PYTHON_PATH..."
-        # Patch fixo solicitado pelo usuário
-        sed -i 's/product_id=0x[0-9a-f]\{4\}/product_id=0x600b/g' "$PYTHON_PATH"
-        echo -e "[OK] Configuração de hardware 0x600b aplicada."
+        sed -i "s/product_id=0x[0-9a-f]\{4\}/product_id=0x${FINAL_ID}/g" "$PYTHON_PATH"
+        echo -e "[OK] Configuração de hardware 0x${FINAL_ID} aplicada no main.py."
+        
+        # Correção do bug crítico da biblioteca aucc (NoneType Error)
+        HANDLER_PATH=$(dirname "$PYTHON_PATH")/core/handler.py
+        if [ -f "$HANDLER_PATH" ]; then
+            echo -e "> Aplicando patch de segurança no handler.py..."
+            # Escreve um script python temporario para reescrever o arquivo para ser mais robusto e não depender de sed
+            python3 -c "
+import sys
+with open('$HANDLER_PATH', 'r') as f:
+    lines = f.readlines()
+with open('$HANDLER_PATH', 'w') as f:
+    in_get_device = False
+    for line in lines:
+        if 'def _get_device' in line:
+            in_get_device = True
+            f.write(line)
+            continue
+        if in_get_device and 'def _get_interface' in line:
+            in_get_device = False
+        
+        if in_get_device:
+            if 'device = usb.core.find' in line:
+                f.write(line)
+                f.write('        if device is None:\n')
+                f.write('            raise ValueError(f\"Dispositivo USB não encontrado pelo sistema. Verifique as permissões ou se o ID {vendor:04x}:{product:04x} está correto.\")\n')
+                continue
+            if 'if device is None:' in line or 'raise ValueError' in line or 'else:' in line or 'return device' in line:
+                continue
+            if 'if not sys.platform.startswith' in line:
+                f.write(line)
+                continue
+            if 'if device.is_kernel_driver_active' in line:
+                f.write(line)
+                continue
+            if 'device.detach_kernel_driver' in line:
+                f.write(line)
+                f.write('        return device\n')
+                continue
+        f.write(line)
+"
+            echo -e "[OK] Patch de segurança do aucc aplicado com sucesso."
+        fi
+        
+        # Limpar o cache do Python para forçar a recompilação com o ID correto
+        rm -rf $(dirname "$PYTHON_PATH")/__pycache__
+        rm -rf $(dirname "$PYTHON_PATH")/core/__pycache__
     else
         echo -e "[ERRO] Falha ao localizar o motor AUCC para aplicar o patch."
     fi

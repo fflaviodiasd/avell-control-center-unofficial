@@ -5,7 +5,7 @@ a = Analysis(
     ['installer.py'],
     pathex=[],
     binaries=[],
-    datas=[('dist/avell-led-control', '.'), ('install_deps.sh', '.'), ('icon.png', '.')],
+    datas=[('dist_v1/avell-led-control', '.'), ('install_deps.sh', '.'), ('icon.png', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
