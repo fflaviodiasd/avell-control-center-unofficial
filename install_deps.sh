@@ -32,16 +32,55 @@ else
     flex bison libfuse2 python3-pip python3-setuptools usbutils python3-pyqt6
 
     if [ $TUXEDO_INSTALLED -eq 0 ]; then
-        # 2. Compilação dos Drivers Tuxedo (Kernel)
-        echo -e "> Compilando drivers de hardware..."
+        # 2. Compilação e instalação dos Drivers Tuxedo via DKMS
+        echo -e "> Compilando e instalando drivers de hardware via DKMS..."
         cd /tmp
         [ -d "tuxedo-drivers" ] && rm -rf tuxedo-drivers
         git clone https://github.com/tuxedocomputers/tuxedo-drivers.git
-        cd tuxedo-drivers && make clean && make
-        make install PWD=$(pwd)
+        cd tuxedo-drivers
+
+        TUXEDO_VER=$(git describe --tags --abbrev=0 2>/dev/null || echo "1.0")
+        TUXEDO_NAME="tuxedo-drivers"
+        DKMS_SRC="/usr/src/${TUXEDO_NAME}-${TUXEDO_VER}"
+
+        # Copia o fonte para onde o DKMS espera
+        mkdir -p "$DKMS_SRC"
+        cp -r . "$DKMS_SRC/"
+
+        # Cria dkms.conf se não existir
+        if [ ! -f "$DKMS_SRC/dkms.conf" ]; then
+            cat > "$DKMS_SRC/dkms.conf" << DKMSEOF
+PACKAGE_NAME="${TUXEDO_NAME}"
+PACKAGE_VERSION="${TUXEDO_VER}"
+MAKE="make -C \${kernel_source_dir} M=\${dkms_tree}/\${PACKAGE_NAME}/\${PACKAGE_VERSION}/build modules"
+CLEAN="make -C \${kernel_source_dir} M=\${dkms_tree}/\${PACKAGE_NAME}/\${PACKAGE_VERSION}/build clean"
+AUTOINSTALL="yes"
+BUILT_MODULE_NAME[0]="ite_8291"
+BUILT_MODULE_LOCATION[0]="src/ite_8291/"
+DEST_MODULE_LOCATION[0]="/updates/src/ite_8291"
+BUILT_MODULE_NAME[1]="ite_8291_lb"
+BUILT_MODULE_LOCATION[1]="src/ite_8291_lb/"
+DEST_MODULE_LOCATION[1]="/updates/src/ite_8291_lb"
+DKMSEOF
+        fi
+
+        dkms add -m "${TUXEDO_NAME}" -v "${TUXEDO_VER}" || true
+        dkms build -m "${TUXEDO_NAME}" -v "${TUXEDO_VER}" -k "$(uname -r)"
+        dkms install -m "${TUXEDO_NAME}" -v "${TUXEDO_VER}" -k "$(uname -r)" --force
         depmod -a
     else
-        echo -e "[OK] Módulos Tuxedo já compilados."
+        echo -e "[OK] Módulos Tuxedo já compilados. Verificando se o kernel atual está coberto..."
+        # Recompila para o kernel atual se necessário (após update do kernel)
+        TUXEDO_DKMS=$(dkms status 2>/dev/null | grep tuxedo | head -1 | awk -F, '{print $1}' | awk '{print $1}')
+        if [ -n "$TUXEDO_DKMS" ]; then
+            TUXEDO_VER_DKMS=$(dkms status 2>/dev/null | grep tuxedo | head -1 | awk -F'/' '{print $2}' | awk '{print $1}')
+            if ! dkms status | grep -q "$(uname -r)"; then
+                echo -e "> Recompilando módulos para o kernel $(uname -r)..."
+                dkms build -m "tuxedo-drivers" -v "${TUXEDO_VER_DKMS}" -k "$(uname -r)"
+                dkms install -m "tuxedo-drivers" -v "${TUXEDO_VER_DKMS}" -k "$(uname -r)" --force
+                depmod -a
+            fi
+        fi
     fi
 
     if [ $AUCC_INSTALLED -eq 0 ]; then

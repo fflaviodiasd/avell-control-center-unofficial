@@ -5,6 +5,8 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QPushButton,
                              QLabel, QHBoxLayout, QFrame, QSystemTrayIcon, QMenu,
                              QInputDialog, QLineEdit, QMessageBox, QColorDialog, QComboBox, QCheckBox,
                              QTabWidget)
+import json
+import argparse
 from PyQt6.QtGui import QIcon, QAction
 from PyQt6.QtCore import Qt, QTimer
 from monitor_widgets import CpuAreaChart, RamStackedBar, DiskDonutChart, NetMirroredChart
@@ -40,7 +42,19 @@ class AvellHardwareManager:
         return self.sudo_password
     
     def run_command(self, cmd_list):
-        """Executa comandos enviando a senha via sudo -S"""
+        """Executa comandos enviando a senha via sudo -S (ignora se for root)"""
+        if os.geteuid() == 0:
+            if cmd_list[0] == 'sudo':
+                if len(cmd_list) > 1 and cmd_list[1] == '-S':
+                    cmd_list = cmd_list[2:]
+                else:
+                    cmd_list = cmd_list[1:]
+            try:
+                subprocess.Popen(cmd_list, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception as e:
+                print(f"Erro root: {e}")
+            return
+
         pwd = self.get_sudo_password()
         if not pwd:
             return
@@ -56,7 +70,8 @@ class AvellHardwareManager:
                 print(f"Erro: {err}")
                 if "incorrect password" in err.lower() or "senha incorreta" in err.lower() or "try again" in err.lower():
                     self.sudo_password = None
-                    QMessageBox.warning(self.parent_widget, "Erro", "Senha incorreta. Tente novamente na próxima ação.")
+                    if self.parent_widget:
+                        QMessageBox.warning(self.parent_widget, "Erro", "Senha incorreta. Tente novamente.")
         except Exception as e:
             print(f"Erro ao executar comando {cmd_list}: {e}")
 
@@ -99,12 +114,24 @@ class AvellHardwareManager:
 
     def set_lightbar_anim(self, mode, use_fixed=False):
         self.stop_lightbar_anim()
+        if not self.lightbar_available():
+            print("Aviso: Lightbar não disponível. Módulo ite_8291_lb não carregado ou hardware ausente.")
+            return
+        cmd = ['sudo', '-S', 'python3', os.path.join(os.path.dirname(__file__), 'lightbar_anim.py'), mode]
+        if use_fixed and mode == "breathing":
+            cmd.extend([str(self.last_lb_color[0]), str(self.last_lb_color[1]), str(self.last_lb_color[2])])
+
+        if os.geteuid() == 0:
+            cmd = cmd[2:]
+            try:
+                self.lb_anim_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception as e:
+                print(e)
+            return
+
         pwd = self.get_sudo_password()
         if not pwd: return
         try:
-            cmd = ['sudo', '-S', 'python3', os.path.join(os.path.dirname(__file__), 'lightbar_anim.py'), mode]
-            if use_fixed and mode == "breathing":
-                cmd.extend([str(self.last_lb_color[0]), str(self.last_lb_color[1]), str(self.last_lb_color[2])])
             p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
             p.stdin.write(pwd + '\n')
             p.stdin.flush()
@@ -112,9 +139,16 @@ class AvellHardwareManager:
         except Exception as e:
             print(f"Erro ao iniciar animação da lightbar: {e}")
 
+    def lightbar_available(self):
+        """Verifica se o módulo ite_8291_lb está carregado e o caminho sysfs existe."""
+        return os.path.exists('/sys/class/leds/rgb:lightbar/brightness')
+
     def set_lightbar(self, r, g, b, brightness=255):
         self.last_lb_color = (r, g, b)
         self.stop_lightbar_anim()
+        if not self.lightbar_available():
+            print("Aviso: Lightbar não disponível. Módulo ite_8291_lb não carregado ou hardware ausente.")
+            return
         if brightness == 0:
             cmd = ['sudo', 'sh', '-c', 'echo 0 > /sys/class/leds/rgb:lightbar/brightness']
         else:
@@ -214,7 +248,7 @@ class AvellLEDMaster(QWidget):
         self.cb_kbd_anim.addItems(["rainbow", "breathing", "wave", "raindrop", "aurora", "ripple", "random", "reactive", "fireworks"])
         self.chk_kbd_fixed = QCheckBox("Cor fixa")
         btn_kbd_anim = QPushButton("Aplicar Animação")
-        btn_kbd_anim.clicked.connect(lambda: self.hw.set_keyboard(mode="anim", anim_style=self.cb_kbd_anim.currentText(), use_fixed=self.chk_kbd_fixed.isChecked()))
+        btn_kbd_anim.clicked.connect(self.apply_kbd_anim)
         kbd_anim_layout.addWidget(self.cb_kbd_anim)
         kbd_anim_layout.addWidget(self.chk_kbd_fixed)
         kbd_anim_layout.addWidget(btn_kbd_anim)
@@ -226,7 +260,7 @@ class AvellLEDMaster(QWidget):
 
         btn_kbd_off = QPushButton("Desligar Teclado")
         btn_kbd_off.setObjectName("danger")
-        btn_kbd_off.clicked.connect(lambda: self.hw.set_keyboard("off"))
+        btn_kbd_off.clicked.connect(self.apply_kbd_off)
         kbd_vbox.addWidget(btn_kbd_off)
         
         self.tab_leds_layout.addWidget(kbd_frame)
@@ -241,7 +275,7 @@ class AvellLEDMaster(QWidget):
         self.cb_lb_anim.addItems(["rainbow", "breathing"])
         self.chk_lb_fixed = QCheckBox("Cor fixa")
         btn_lb_anim = QPushButton("Aplicar Animação")
-        btn_lb_anim.clicked.connect(lambda: self.hw.set_lightbar_anim(self.cb_lb_anim.currentText(), use_fixed=self.chk_lb_fixed.isChecked()))
+        btn_lb_anim.clicked.connect(self.apply_lb_anim)
         lb_anim_layout.addWidget(self.cb_lb_anim)
         lb_anim_layout.addWidget(self.chk_lb_fixed)
         lb_anim_layout.addWidget(btn_lb_anim)
@@ -253,7 +287,7 @@ class AvellLEDMaster(QWidget):
 
         btn_lb_off = QPushButton("Desligar Lightbar")
         btn_lb_off.setObjectName("danger")
-        btn_lb_off.clicked.connect(lambda: self.hw.set_lightbar(0, 0, 0, brightness=0))
+        btn_lb_off.clicked.connect(self.apply_lb_off)
         lb_vbox.addWidget(btn_lb_off)
 
         self.tab_leds_layout.addWidget(lb_frame)
@@ -389,15 +423,53 @@ class AvellLEDMaster(QWidget):
                 self.disk_label.setText(f"Uso de Disco (/):\n{used_disk/1024**3:.1f} GB / {total_disk/1024**3:.1f} GB")
         except Exception: pass
 
+    def save_current_state(self, updates):
+        config_dir = os.path.expanduser("~/.config")
+        os.makedirs(config_dir, exist_ok=True)
+        config_path = os.path.join(config_dir, "avell-gui-settings.json")
+        state = {}
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r") as f:
+                    state = json.load(f)
+            except: pass
+        state.update(updates)
+        try:
+            with open(config_path, "w") as f:
+                json.dump(state, f)
+        except: pass
+
+    def apply_kbd_anim(self):
+        anim = self.cb_kbd_anim.currentText()
+        fixed = self.chk_kbd_fixed.isChecked()
+        self.hw.set_keyboard(mode="anim", anim_style=anim, use_fixed=fixed)
+        self.save_current_state({"kbd_mode": "anim", "kbd_anim": anim, "kbd_fixed": fixed, "kbd_suffix": self.hw.last_kbd_color_suffix})
+
+    def apply_kbd_off(self):
+        self.hw.set_keyboard("off")
+        self.save_current_state({"kbd_mode": "off", "kbd_rgb": None})
+
     def choose_keyboard_color(self):
         color = QColorDialog.getColor()
         if color.isValid():
             self.hw.set_keyboard_rgb(color.red(), color.green(), color.blue())
+            self.save_current_state({"kbd_mode": None, "kbd_rgb": [color.red(), color.green(), color.blue()]})
+
+    def apply_lb_anim(self):
+        anim = self.cb_lb_anim.currentText()
+        fixed = self.chk_lb_fixed.isChecked()
+        self.hw.set_lightbar_anim(anim, use_fixed=fixed)
+        self.save_current_state({"lb_mode": "anim", "lb_anim": anim, "lb_fixed": fixed, "lb_color": self.hw.last_lb_color})
+
+    def apply_lb_off(self):
+        self.hw.set_lightbar(0, 0, 0, brightness=0)
+        self.save_current_state({"lb_mode": "off", "lb_brightness": 0})
 
     def choose_lightbar_color(self):
         color = QColorDialog.getColor()
         if color.isValid():
             self.hw.set_lightbar(color.red(), color.green(), color.blue())
+            self.save_current_state({"lb_mode": "static", "lb_color": [color.red(), color.green(), color.blue()], "lb_brightness": 255})
 
     def setupTray(self):
         self.tray_icon = QSystemTrayIcon(self)
@@ -417,6 +489,37 @@ class AvellLEDMaster(QWidget):
         self.tray_icon.show()
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--boot', action='store_true', help='Rodar sem interface gráfica para aplicar configurações')
+    parser.add_argument('--config', type=str, default="", help='Caminho do arquivo de configuração JSON')
+    args, unknown = parser.parse_known_args()
+
+    if args.boot:
+        if args.config and os.path.exists(args.config):
+            try:
+                with open(args.config, "r") as f:
+                    state = json.load(f)
+                hw = AvellHardwareManager()
+                
+                # Aplica teclado
+                if state.get("kbd_mode"):
+                    hw.last_kbd_color_suffix = state.get("kbd_suffix", "")
+                    hw.set_keyboard(mode=state["kbd_mode"], anim_style=state.get("kbd_anim"), use_fixed=state.get("kbd_fixed", False))
+                elif state.get("kbd_rgb"):
+                    hw.set_keyboard_rgb(*state["kbd_rgb"])
+                    
+                # Aplica lightbar
+                if state.get("lb_mode") == "anim":
+                    hw.last_lb_color = state.get("lb_color", (0,150,255))
+                    hw.set_lightbar_anim(state.get("lb_anim"), use_fixed=state.get("lb_fixed", False))
+                elif state.get("lb_mode") == "static":
+                    hw.set_lightbar(*state.get("lb_color", (0,150,255)), brightness=state.get("lb_brightness", 255))
+                elif state.get("lb_mode") == "off":
+                    hw.set_lightbar(0,0,0,0)
+            except Exception as e:
+                print(f"Erro ao aplicar boot config: {e}")
+        sys.exit(0)
+
     app = QApplication(sys.argv)
     ex = AvellLEDMaster()
     ex.show()
