@@ -4,7 +4,7 @@ import subprocess
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QPushButton, 
                              QLabel, QHBoxLayout, QFrame, QSystemTrayIcon, QMenu,
                              QInputDialog, QLineEdit, QMessageBox, QColorDialog, QComboBox, QCheckBox,
-                             QTabWidget)
+                             QTabWidget, QSlider, QSpinBox)
 import json
 import argparse
 from PyQt6.QtGui import QIcon, QAction
@@ -161,6 +161,7 @@ class AvellLEDMaster(QWidget):
         self.hw = AvellHardwareManager(self)
         self.initUI()
         self.setupTray()
+        self.restore_ui_state()
 
     def initUI(self):
         # Estilização Dark Mode Moderna
@@ -245,7 +246,24 @@ class AvellLEDMaster(QWidget):
         
         kbd_anim_layout = QHBoxLayout()
         self.cb_kbd_anim = QComboBox()
-        self.cb_kbd_anim.addItems(["rainbow", "breathing", "wave", "raindrop", "aurora", "ripple", "random", "reactive", "fireworks"])
+        # Mapa: label exibida -> nome interno do aucc
+        self._kbd_anim_map = {
+            "Rainbow":              "rainbow",
+            "Breathing (pulsação)": "breathing",
+            "Wave (onda)": "wave",
+            "Raindrop (chuva)": "raindrop",
+            "Aurora": "aurora",
+            "Ripple (ondulação)": "ripple",
+            "Random": "random",
+            "⭐ Reactive (tecla acende)": "reactive",
+            "⭐ Reactive Ripple": "reactiveripple",
+            "⭐ Reactive Aurora": "reactiveaurora",
+            "Fireworks (fogos)": "fireworks",
+            "Marquee": "marquee",
+        }
+        self.cb_kbd_anim.addItems(list(self._kbd_anim_map.keys()))
+        # Seleciona Reactive por padrão
+        self.cb_kbd_anim.setCurrentText("⭐ Reactive (tecla acende)")
         self.chk_kbd_fixed = QCheckBox("Cor fixa")
         btn_kbd_anim = QPushButton("Aplicar Animação")
         btn_kbd_anim.clicked.connect(self.apply_kbd_anim)
@@ -253,6 +271,32 @@ class AvellLEDMaster(QWidget):
         kbd_anim_layout.addWidget(self.chk_kbd_fixed)
         kbd_anim_layout.addWidget(btn_kbd_anim)
         kbd_vbox.addLayout(kbd_anim_layout)
+
+        # Velocidade da animação do teclado
+        kbd_speed_layout = QHBoxLayout()
+        kbd_speed_layout.addWidget(QLabel("⏱ Velocidade:"))
+        self.sl_kbd_speed = QSlider(Qt.Orientation.Horizontal)
+        self.sl_kbd_speed.setMinimum(1)
+        self.sl_kbd_speed.setMaximum(10)
+        self.sl_kbd_speed.setValue(3)
+        self.sl_kbd_speed.setTickInterval(1)
+        self.sl_kbd_speed.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.sl_kbd_speed.setStyleSheet("""
+            QSlider::groove:horizontal { height:6px; background:#2c2c2c; border-radius:3px; }
+            QSlider::sub-page:horizontal { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #6600cc, stop:1 #cc00ff); border-radius:3px; }
+            QSlider::handle:horizontal { background:#cc00ff; border:2px solid #fff; width:16px; height:16px; margin:-5px 0; border-radius:8px; }
+        """)
+        self.sp_kbd_speed = QSpinBox()
+        self.sp_kbd_speed.setMinimum(1)
+        self.sp_kbd_speed.setMaximum(10)
+        self.sp_kbd_speed.setValue(3)
+        self.sp_kbd_speed.setFixedWidth(50)
+        self.sp_kbd_speed.setStyleSheet("background-color:#1e1e1e; color:#e0e0e0; border:1px solid #444; border-radius:4px; padding:2px;")
+        self.sl_kbd_speed.valueChanged.connect(self.sp_kbd_speed.setValue)
+        self.sp_kbd_speed.valueChanged.connect(self.sl_kbd_speed.setValue)
+        kbd_speed_layout.addWidget(self.sl_kbd_speed)
+        kbd_speed_layout.addWidget(self.sp_kbd_speed)
+        kbd_vbox.addLayout(kbd_speed_layout)
 
         btn_kbd_color = QPushButton("🎨 Escolher Cor (Teclado)")
         btn_kbd_color.clicked.connect(self.choose_keyboard_color)
@@ -272,7 +316,15 @@ class AvellLEDMaster(QWidget):
 
         lb_anim_layout = QHBoxLayout()
         self.cb_lb_anim = QComboBox()
-        self.cb_lb_anim.addItems(["rainbow", "breathing"])
+        self.cb_lb_anim.addItems([
+            "rainbow",    # 🌈 Arco-íris
+            "breathing",  # 💨 Respiração suave
+            "strobe",     # ⚡ Strobe / Flash
+            "pulse",      # 💓 Pulso / Coração
+            "fire",       # 🔥 Chamas
+            "wave",       # 🌊 Onda bicolor
+            "aurora",     # 🌌 Aurora Boreal
+        ])
         self.chk_lb_fixed = QCheckBox("Cor fixa")
         btn_lb_anim = QPushButton("Aplicar Animação")
         btn_lb_anim.clicked.connect(self.apply_lb_anim)
@@ -281,9 +333,67 @@ class AvellLEDMaster(QWidget):
         lb_anim_layout.addWidget(btn_lb_anim)
         lb_vbox.addLayout(lb_anim_layout)
 
+        # Preview de cor + botão escolher cor
+        lb_color_layout = QHBoxLayout()
+        self.lb_color_preview = QFrame()
+        self.lb_color_preview.setFixedSize(32, 32)
+        self.lb_color_preview.setStyleSheet(
+            "background-color: rgb(0, 150, 255); border-radius: 6px; border: 1px solid #444;"
+        )
         btn_lb_color = QPushButton("🎨 Escolher Cor (Lightbar)")
         btn_lb_color.clicked.connect(self.choose_lightbar_color)
-        lb_vbox.addWidget(btn_lb_color)
+        lb_color_layout.addWidget(self.lb_color_preview)
+        lb_color_layout.addWidget(btn_lb_color)
+        lb_vbox.addLayout(lb_color_layout)
+
+        # Slider de Intensidade
+        lb_brightness_label = QLabel("💡 Intensidade:")
+        lb_vbox.addWidget(lb_brightness_label)
+
+        lb_brightness_layout = QHBoxLayout()
+        self.lb_brightness_slider = QSlider(Qt.Orientation.Horizontal)
+        self.lb_brightness_slider.setMinimum(0)
+        self.lb_brightness_slider.setMaximum(100)
+        self.lb_brightness_slider.setValue(100)
+        self.lb_brightness_slider.setTickInterval(10)
+        self.lb_brightness_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.lb_brightness_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                height: 6px;
+                background: #2c2c2c;
+                border-radius: 3px;
+            }
+            QSlider::sub-page:horizontal {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #003399, stop:1 #00aaff);
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: #00aaff;
+                border: 2px solid #ffffff;
+                width: 16px;
+                height: 16px;
+                margin: -5px 0;
+                border-radius: 8px;
+            }
+        """)
+
+        self.lb_brightness_spin = QSpinBox()
+        self.lb_brightness_spin.setMinimum(0)
+        self.lb_brightness_spin.setMaximum(100)
+        self.lb_brightness_spin.setValue(100)
+        self.lb_brightness_spin.setSuffix("%")
+        self.lb_brightness_spin.setFixedWidth(68)
+        self.lb_brightness_spin.setStyleSheet("background-color: #1e1e1e; color: #e0e0e0; border: 1px solid #444; border-radius: 4px; padding: 2px;")
+
+        # Sincronizar slider <-> spinbox
+        self.lb_brightness_slider.valueChanged.connect(self.lb_brightness_spin.setValue)
+        self.lb_brightness_spin.valueChanged.connect(self.lb_brightness_slider.setValue)
+        self.lb_brightness_slider.valueChanged.connect(self.on_lb_brightness_changed)
+
+        lb_brightness_layout.addWidget(self.lb_brightness_slider)
+        lb_brightness_layout.addWidget(self.lb_brightness_spin)
+        lb_vbox.addLayout(lb_brightness_layout)
 
         btn_lb_off = QPushButton("Desligar Lightbar")
         btn_lb_off.setObjectName("danger")
@@ -423,6 +533,31 @@ class AvellLEDMaster(QWidget):
                 self.disk_label.setText(f"Uso de Disco (/):\n{used_disk/1024**3:.1f} GB / {total_disk/1024**3:.1f} GB")
         except Exception: pass
 
+    def restore_ui_state(self):
+        """Restaura o valor do slider e preview de cor com base no JSON salvo."""
+        config_path = os.path.expanduser("~/.config/avell-gui-settings.json")
+        if not os.path.exists(config_path):
+            return
+        try:
+            with open(config_path, "r") as f:
+                state = json.load(f)
+            # Restaura intensidade (salva em 0-100)
+            brightness = min(100, state.get("lb_brightness", 100))
+            self.lb_brightness_slider.blockSignals(True)
+            self.lb_brightness_slider.setValue(brightness)
+            self.lb_brightness_spin.setValue(brightness)
+            self.lb_brightness_slider.blockSignals(False)
+            # Restaura preview de cor
+            lb_color = state.get("lb_color")
+            if lb_color and len(lb_color) == 3:
+                r, g, b = lb_color
+                self.hw.last_lb_color = (r, g, b)
+                self.lb_color_preview.setStyleSheet(
+                    f"background-color: rgb({r},{g},{b}); border-radius: 6px; border: 1px solid #444;"
+                )
+        except Exception as e:
+            print(f"Aviso: não foi possível restaurar UI state: {e}")
+
     def save_current_state(self, updates):
         config_dir = os.path.expanduser("~/.config")
         os.makedirs(config_dir, exist_ok=True)
@@ -440,10 +575,17 @@ class AvellLEDMaster(QWidget):
         except: pass
 
     def apply_kbd_anim(self):
-        anim = self.cb_kbd_anim.currentText()
+        label = self.cb_kbd_anim.currentText()
+        anim = self._kbd_anim_map.get(label, label)  # fallback para o próprio texto
         fixed = self.chk_kbd_fixed.isChecked()
-        self.hw.set_keyboard(mode="anim", anim_style=anim, use_fixed=fixed)
-        self.save_current_state({"kbd_mode": "anim", "kbd_anim": anim, "kbd_fixed": fixed, "kbd_suffix": self.hw.last_kbd_color_suffix})
+        speed = self.sl_kbd_speed.value()
+        # Monta o nome do estilo com sufixo de cor se "cor fixa" estiver marcada
+        style = anim
+        if fixed and self.hw.last_kbd_color_suffix:
+            style = anim + self.hw.last_kbd_color_suffix
+        self.hw.run_command(['sudo', 'aucc', '-s', style, '--speed', str(speed)])
+        self.save_current_state({"kbd_mode": "anim", "kbd_anim": anim, "kbd_fixed": fixed,
+                                  "kbd_suffix": self.hw.last_kbd_color_suffix, "kbd_speed": speed})
 
     def apply_kbd_off(self):
         self.hw.set_keyboard("off")
@@ -462,14 +604,32 @@ class AvellLEDMaster(QWidget):
         self.save_current_state({"lb_mode": "anim", "lb_anim": anim, "lb_fixed": fixed, "lb_color": self.hw.last_lb_color})
 
     def apply_lb_off(self):
+        self.lb_brightness_slider.blockSignals(True)
+        self.lb_brightness_slider.setValue(0)
+        self.lb_brightness_spin.setValue(0)
+        self.lb_brightness_slider.blockSignals(False)
         self.hw.set_lightbar(0, 0, 0, brightness=0)
         self.save_current_state({"lb_mode": "off", "lb_brightness": 0})
+
+    def on_lb_brightness_changed(self, value):
+        """Chamado ao mover o slider — aplica a intensidade na cor atual em tempo real.
+        O slider vai de 0-100 (%) e é mapeado para 0-255 para o hardware."""
+        r, g, b = self.hw.last_lb_color
+        hw_brightness = round(value * 255 / 100)
+        self.hw.set_lightbar(r, g, b, brightness=hw_brightness)
+        self.save_current_state({"lb_mode": "static", "lb_color": [r, g, b], "lb_brightness": value})
 
     def choose_lightbar_color(self):
         color = QColorDialog.getColor()
         if color.isValid():
-            self.hw.set_lightbar(color.red(), color.green(), color.blue())
-            self.save_current_state({"lb_mode": "static", "lb_color": [color.red(), color.green(), color.blue()], "lb_brightness": 255})
+            r, g, b = color.red(), color.green(), color.blue()
+            pct = self.lb_brightness_slider.value()  # 0-100
+            hw_brightness = round(pct * 255 / 100)
+            self.lb_color_preview.setStyleSheet(
+                f"background-color: rgb({r},{g},{b}); border-radius: 6px; border: 1px solid #444;"
+            )
+            self.hw.set_lightbar(r, g, b, brightness=hw_brightness)
+            self.save_current_state({"lb_mode": "static", "lb_color": [r, g, b], "lb_brightness": pct})
 
     def setupTray(self):
         self.tray_icon = QSystemTrayIcon(self)
