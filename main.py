@@ -655,29 +655,47 @@ if __name__ == '__main__':
     args, unknown = parser.parse_known_args()
 
     if args.boot:
-        if args.config and os.path.exists(args.config):
+        config_path = args.config if args.config else os.path.expanduser("~/.config/avell-gui-settings.json")
+        if os.path.exists(config_path):
             try:
-                with open(args.config, "r") as f:
+                with open(config_path, "r") as f:
                     state = json.load(f)
                 hw = AvellHardwareManager()
-                
-                # Aplica teclado
-                if state.get("kbd_mode"):
-                    hw.last_kbd_color_suffix = state.get("kbd_suffix", "")
-                    hw.set_keyboard(mode=state["kbd_mode"], anim_style=state.get("kbd_anim"), use_fixed=state.get("kbd_fixed", False))
+
+                # --- Aplica teclado ---
+                if state.get("kbd_mode") == "anim" and state.get("kbd_anim"):
+                    anim = state["kbd_anim"]
+                    suffix = state.get("kbd_suffix", "")
+                    speed = state.get("kbd_speed", 3)
+                    fixed = state.get("kbd_fixed", False)
+                    style = (anim + suffix) if (fixed and suffix) else anim
+                    # Chama aucc diretamente (boot roda como root, sem sudo)
+                    subprocess.run(['aucc', '-s', style, '--speed', str(speed)],
+                                   capture_output=True)
+                elif state.get("kbd_mode") == "off":
+                    subprocess.run(['aucc', '-d'], capture_output=True)
                 elif state.get("kbd_rgb"):
                     hw.set_keyboard_rgb(*state["kbd_rgb"])
-                    
-                # Aplica lightbar
-                if state.get("lb_mode") == "anim":
-                    hw.last_lb_color = state.get("lb_color", (0,150,255))
-                    hw.set_lightbar_anim(state.get("lb_anim"), use_fixed=state.get("lb_fixed", False))
+
+                # --- Aplica lightbar ---
+                if state.get("lb_mode") == "anim" and state.get("lb_anim"):
+                    lb_color = state.get("lb_color", [0, 150, 255])
+                    hw.last_lb_color = tuple(lb_color)
+                    hw.set_lightbar_anim(state["lb_anim"], use_fixed=state.get("lb_fixed", False))
                 elif state.get("lb_mode") == "static":
-                    hw.set_lightbar(*state.get("lb_color", (0,150,255)), brightness=state.get("lb_brightness", 255))
+                    lb_color = state.get("lb_color", [0, 150, 255])
+                    # lb_brightness salvo em 0-100%, converter para 0-255
+                    pct = state.get("lb_brightness", 100)
+                    hw_brightness = round(min(pct, 100) * 255 / 100)
+                    hw.set_lightbar(*lb_color, brightness=hw_brightness)
                 elif state.get("lb_mode") == "off":
-                    hw.set_lightbar(0,0,0,0)
+                    hw.set_lightbar(0, 0, 0, brightness=0)
+
+                print("[OK] Configurações de LEDs aplicadas com sucesso.")
             except Exception as e:
                 print(f"Erro ao aplicar boot config: {e}")
+        else:
+            print(f"Arquivo de config não encontrado: {config_path}")
         sys.exit(0)
 
     app = QApplication(sys.argv)
